@@ -1,0 +1,21 @@
+[tool.poetry]
+name = "dashserver"
+version = "0.1.0"
+description = "A server using plotly and Dash to replace the student progress tab of the web2py based Runestone Academy server."
+authors = ["Brad Miller <bonelake@mac.com>"]
+license = "MIT"
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.9"
+pandas = "^1.5.1"
+dash = {extras = ["celery"], version = "^2.7.0"}
+sqlalchemy = "^1.4.44"
+psycopg2-binary = "^2.9.5"
+
+[tool.poetry.group.dev.dependencies]
+dash = {extras = ["diskcache"], version = "^2.7.0"}
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
