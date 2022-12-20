@@ -1,0 +1,6 @@
+cache/
+.nova/
+__pycache__
+*.pyc
+*~
+
