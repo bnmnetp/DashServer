@@ -29,24 +29,35 @@ BASE = "py4e-int"
 colors = {"background": "#111111", "text": "#7FDBFF"}
 
 
+def get_chapters():
+    chap_data = pd.read_sql_query
+    res = pd.read_sql_query(
+        f"""
+    select chapter_name as label, chapter_label as value from chapters
+    where course_id = '{BASE}' and chapter_num < 999
+    order by chapter_num
+    """,
+        eng,
+    )
+
+    return res.to_dict(orient="records")
+
+
 @dash.callback(
     output=Output("example-graph", "figure"),
-    inputs=Input("button_id", "n_clicks"),
+    inputs=Input("chapter_list", "value"),
     background=True,
     manager=long_callback_manager,
 )
-def do_callback(n_clicks):
-    return make_progress_graph(n_clicks)
+def do_callback(chap_label):
+    return make_progress_graph(chap_label)
 
 
-def make_progress_graph(start):
-    if start:
-        fig = px.bar(x=["student"], y=[1])
-        return fig
+def make_progress_graph(chapter):
 
     progress = pd.read_sql_query(
         f"""select sub_chapter_id, status, count(*)
-    from user_sub_chapter_progress where course_name = '{COURSE}' and chapter_id = '{CHAPTER}'
+    from user_sub_chapter_progress where course_name = '{COURSE}' and chapter_id = '{chapter}'
     group by sub_chapter_id, status
     order by sub_chapter_id""",
         eng,
@@ -82,6 +93,11 @@ app.layout = html.Div(
         html.H1(
             children="Student Progress",
             style={"textAlign": "center", "color": colors["text"]},
+        ),
+        dcc.Dropdown(
+            id="chapter_list",
+            options=get_chapters(),
+            value="intro",
         ),
         html.Div(
             children="""
