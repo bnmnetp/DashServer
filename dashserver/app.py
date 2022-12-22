@@ -20,7 +20,6 @@ long_callback_manager = DiskcacheLongCallbackManager(cache)
 app = Dash(__name__)
 
 # eng = create_engine("postgresql://bmiller:@localhost:8541/runestone_archive")
-eng = create_engine("postgresql://bmiller:@runestoneM1.local/runestone_archive")
 
 COURSE = "Win21-SI206"
 CHAPTER = "functions"
@@ -30,6 +29,8 @@ colors = {"background": "#111111", "text": "#7FDBFF"}
 
 
 def get_chapters():
+    eng = create_engine("postgresql://bmiller:@runestoneM1.local/runestone_archive")
+
     chap_data = pd.read_sql_query
     res = pd.read_sql_query(
         f"""
@@ -44,7 +45,7 @@ def get_chapters():
 
 
 @dash.callback(
-    output=Output("example-graph", "figure"),
+    output=Output("chapter-progress-graph", "figure"),
     inputs=Input("chapter_list", "value"),
     background=True,
     manager=long_callback_manager,
@@ -54,6 +55,7 @@ def do_callback(chap_label):
 
 
 def make_progress_graph(chapter):
+    eng = create_engine("postgresql://bmiller:@runestoneM1.local/runestone_archive")
 
     progress = pd.read_sql_query(
         f"""select sub_chapter_id, status, count(*)
@@ -88,6 +90,40 @@ def make_progress_graph(chapter):
     return fig
 
 
+@dash.callback(
+    output=Output("student-progress-graph", "figure"),
+    inputs=Input("chapter_list", "value"),
+    background=True,
+    manager=long_callback_manager,
+)
+def do_callback(chap_label):
+    return make_student_activity_graph(chap_label)
+
+
+def make_student_activity_graph(chap):
+    eng = create_engine("postgresql://bmiller:@runestoneM1.local/runestone_archive")
+
+    sa = pd.read_sql_query(
+        f"""
+    select sid, Etype, count(*) from (
+    select sid,
+      case
+        when event = 'page' then 'Page View'
+        when event = 'activecode' then 'Run Program'
+        else 'Other'
+      end as EType
+    from useinfo where course_id = '{COURSE}' ) as T
+    group by sid, EType
+    order by sid
+    """,
+        eng,
+    )
+    sa = sa[sa.sid.str.contains("@") == False]
+    fig = px.bar(sa, x="count", y="sid", color="etype", width=700, height=1200)
+
+    return fig
+
+
 app.layout = html.Div(
     [
         html.H1(
@@ -100,12 +136,14 @@ app.layout = html.Div(
             value="intro",
         ),
         html.Div(
-            children="""
-        Dash: A web application framework for your data.
-    """
+            children=[
+                """Chapter Progress""",
+                dcc.Graph(id="chapter-progress-graph"),
+            ]
         ),
-        dcc.Graph(id="example-graph"),
-        html.Button(id="button_id", children="update"),
+        html.Div(
+            children=["""Student Progress""", dcc.Graph(id="student-progress-graph")]
+        ),
     ]
 )
 
