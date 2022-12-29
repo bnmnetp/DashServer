@@ -10,16 +10,15 @@ from dash.long_callback import DiskcacheLongCallbackManager
 from dash.dependencies import Input, Output
 import diskcache
 import plotly.express as px
-import plotly.graph_objects as go
 import pandas as pd
 from sqlalchemy import create_engine
+import dash_bootstrap_components as dbc
 
 cache = diskcache.Cache("./cache")
 long_callback_manager = DiskcacheLongCallbackManager(cache)
 
-app = Dash(__name__)
+app = Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP])
 
-# eng = create_engine("postgresql://bmiller:@localhost:8541/runestone_archive")
 
 COURSE = "Win21-SI206"
 CHAPTER = "functions"
@@ -27,9 +26,15 @@ BASE = "py4e-int"
 
 colors = {"background": "#111111", "text": "#7FDBFF"}
 
+# DBURL_CABIN = "postgresql://bmiller:@runestoneM1.local/runestone_archive"
+DBURL = "postgresql://bmiller:@localhost:8541/runestone_archive"
+
 
 def get_chapters():
-    eng = create_engine("postgresql://bmiller:@runestoneM1.local/runestone_archive")
+    # since the various chart creating things are asynchronous each needs their own engine.
+    # There must be a better way than creating and disposing of an engine.  But I'll need
+    # to do more research
+    eng = create_engine(DBURL)
 
     chap_data = pd.read_sql_query
     res = pd.read_sql_query(
@@ -44,6 +49,11 @@ def get_chapters():
     return res.to_dict(orient="records")
 
 
+#
+# Chapter / SubChapter progress
+#
+
+
 @dash.callback(
     output=Output("chapter-progress-graph", "figure"),
     inputs=Input("chapter_list", "value"),
@@ -55,7 +65,7 @@ def do_callback(chap_label):
 
 
 def make_progress_graph(chapter):
-    eng = create_engine("postgresql://bmiller:@runestoneM1.local/runestone_archive")
+    eng = create_engine(DBURL)
 
     progress = pd.read_sql_query(
         f"""select sub_chapter_id, status, count(*)
@@ -90,6 +100,17 @@ def make_progress_graph(chapter):
     return fig
 
 
+#
+# Student Activity Summary
+#
+# This callback takes a bit of getting used to
+# `output` contains the id of a thing in the page layout that will be replaced as a result of the
+# callback. It is a figure.
+# The `input` Hooks this up to one or more input elements.  For example a dropdown or button,
+# For traditional html input methods you would typically want the value but some elements created by
+# Dash have special values such as n_clicks for a button.
+# the manager is typically a celery/redis thing in production but for development it is easy to use diskcache.
+#
 @dash.callback(
     output=Output("student-progress-graph", "figure"),
     inputs=Input("chapter_list", "value"),
@@ -101,7 +122,7 @@ def do_callback(chap_label):
 
 
 def make_student_activity_graph(chap):
-    eng = create_engine("postgresql://bmiller:@runestoneM1.local/runestone_archive")
+    eng = create_engine(DBURL)
 
     sa = pd.read_sql_query(
         f"""
@@ -124,27 +145,89 @@ def make_student_activity_graph(chap):
     return fig
 
 
+#
+# Donut Charts by subchapter
+#
+@app.callback(Output("subchapter_list", "options"), Input("chapter_list", "value"))
+def set_cities_options(selected_chapter):
+    # select all subchapters for the given chapter in the BASECOURSE
+    res = pd.read_sql_query(
+        f"""
+    select sub_chapter_name as label, sub_chapter_label as value
+        from sub_chapters join chapters on chapter_id = chapters.id
+        where chapters.course_id = 'py4e-int'
+            and chapters.chapter_label = '{selected_chapter}'
+            and sub_chapter_num != 999
+        order by sub_chapter_num""",
+        DBURL,
+    )
+
+    return res.to_dict(orient="records")
+
+
+# Now we need another callbackk that uses the output of the selected chapter and
+# subchapter so that we can generate the donut charts.
+@app.callback(
+    Output("bag_of_donuts", "figure"),
+    Input("chapter_list", "value"),
+    Input("subchapter_list", "value"),
+)
+def make_the_donuts(chapter, subchapter):
+    pass
+
+
+# This layout describes the page.  There is no html and no template, just this.
+# Under the hood Dash generates the required html/css/javascript using React.
+#
 app.layout = html.Div(
-    [
-        html.H1(
-            children="Student Progress",
-            style={"textAlign": "center", "color": colors["text"]},
-        ),
-        dcc.Dropdown(
-            id="chapter_list",
-            options=get_chapters(),
-            value="intro",
-        ),
+    children=[
         html.Div(
-            children=[
-                """Chapter Progress""",
-                dcc.Graph(id="chapter-progress-graph"),
+            [
+                dbc.Row(
+                    [
+                        dbc.Col(
+                            children=[
+                                html.H1(
+                                    children="Student Progress",
+                                    style={
+                                        "textAlign": "center",
+                                        "color": colors["text"],
+                                    },
+                                ),
+                                """Chapter Progress""",
+                                dcc.Dropdown(
+                                    id="chapter_list",
+                                    options=get_chapters(),
+                                    value="intro",
+                                ),
+                                dcc.Graph(id="chapter-progress-graph"),
+                            ],
+                            style={"width": "48%"},
+                        ),
+                        dbc.Col(
+                            children=[
+                                """Student Progress""",
+                                dcc.Graph(id="student-progress-graph"),
+                            ],
+                            style={"width": "48%"},
+                        ),
+                    ]
+                ),
+                # Here begins the donut chart section...
+                # This adds a bunch of complexity now because we want the chapter dropdown to cause
+                # this dropdown to update with its subchapters as well as updating the chapter information
+                # in previous outputs.  See `Dash App With Chained Callbacks <https://dash.plotly.com/basic-callbacks>`_ for a good example
+                dbc.Row(
+                    [
+                        dcc.Dropdown(
+                            id="subchapter_list",
+                        ),
+                        dcc.Graph(id="bag_of_donuts"),
+                    ]
+                ),
             ]
-        ),
-        html.Div(
-            children=["""Student Progress""", dcc.Graph(id="student-progress-graph")]
-        ),
-    ]
+        )
+    ],
 )
 
 if __name__ == "__main__":
