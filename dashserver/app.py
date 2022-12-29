@@ -13,21 +13,37 @@ import plotly.express as px
 import pandas as pd
 from sqlalchemy import create_engine
 import dash_bootstrap_components as dbc
+from plotly.subplots import make_subplots
+import math
 
 cache = diskcache.Cache("./cache")
 long_callback_manager = DiskcacheLongCallbackManager(cache)
 
 app = Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP])
 
-
+# TODO: eliminate these globals after testing
 COURSE = "Win21-SI206"
-CHAPTER = "functions"
 BASE = "py4e-int"
 
 colors = {"background": "#111111", "text": "#7FDBFF"}
 
-# DBURL_CABIN = "postgresql://bmiller:@runestoneM1.local/runestone_archive"
-DBURL = "postgresql://bmiller:@localhost:8541/runestone_archive"
+DBURL = "postgresql://bmiller:@runestoneM1.local/runestone_archive"
+# DBURL = "postgresql://bmiller:@localhost:8541/runestone_archive"
+
+ALL_STUDENTS = pd.read_sql_query(
+    f"""select username, first_name, last_name
+from user_courses join auth_user on user_id = auth_user.id join courses on user_courses.course_id = courses.id
+where courses.course_name = '{COURSE}'
+""",
+    DBURL,
+)
+
+
+def row_col_gen(num_items, cols=2):
+    rows = math.ceil(num_items / 2)
+    for i in range(1, rows + 1):
+        for j in range(1, cols + 1):
+            yield tuple([i, j])
 
 
 def get_chapters():
@@ -140,6 +156,8 @@ def make_student_activity_graph(chap):
         eng,
     )
     sa = sa[sa.sid.str.contains("@") == False]
+    # sa["is_instructor"] = sa.sid.map(lambda x: x in ALL_STUDENTS.username.values)
+    # sa = sa[sa.is_instructor == False]
     fig = px.bar(sa, x="count", y="sid", color="etype", width=700, height=1200)
 
     return fig
@@ -155,14 +173,16 @@ def set_cities_options(selected_chapter):
         f"""
     select sub_chapter_name as label, sub_chapter_label as value
         from sub_chapters join chapters on chapter_id = chapters.id
-        where chapters.course_id = 'py4e-int'
+        where chapters.course_id = '{BASE}'
             and chapters.chapter_label = '{selected_chapter}'
             and sub_chapter_num != 999
+            and sub_chapter_num != 0
         order by sub_chapter_num""",
         DBURL,
     )
 
-    return res.to_dict(orient="records")
+    res = res.to_dict(orient="records")
+    return res
 
 
 # Now we need another callbackk that uses the output of the selected chapter and
@@ -173,7 +193,117 @@ def set_cities_options(selected_chapter):
     Input("subchapter_list", "value"),
 )
 def make_the_donuts(chapter, subchapter):
-    pass
+    # note pass makes the entire page unresponsive I guess since it does not supply
+    # the required output...
+    eng = create_engine(DBURL)
+
+    answer_tables = [
+        "clickablearea_answers",
+        "dragndrop_answers",
+        "fitb_answers",
+        "mchoice_answers",
+        "parsons_answers",
+        "unittest_answers",
+    ]
+    all_answers = []
+
+    for tbl in answer_tables:
+        all_answers.append(
+            pd.read_sql_query(
+                f"""select div_id, sid, correct, count(*), min({tbl}.timestamp)
+        from {tbl} join questions on div_id = questions.name
+            and questions.base_course = '{BASE}'
+            and questions.from_source = 'T'
+        where course_name = '{COURSE}'
+            and chapter = '{chapter}'
+            and subchapter = '{subchapter}'
+        group by div_id, sid, correct
+        order by div_id, sid
+    """,
+                eng,
+            )
+        )
+
+    student_work = pd.concat(all_answers)
+
+    sun = student_work.set_index(["sid", "div_id", "correct"]).unstack(
+        level=["correct"]
+    )
+
+    sun = sun.reset_index()
+
+    # pd.MultiIndex.from_tuples(sun.rename(columns={('min', 'T'): ('min', 'first_correct')}))
+    sun.columns = sun.columns.map("_".join)
+
+    sun = sun.rename(
+        columns={
+            "min_F": "first_incorrect",
+            "min_T": "first_correct",
+            "div_id_": "div_id",
+            "sid_": "sid",
+            "count_F": "num_incorrect",
+            "count_T": "num_correct",
+        }
+    )
+
+    tot_students = len(ALL_STUDENTS) - 1
+    try:
+        sun["right_first"] = sun.apply(
+            lambda row: row.first_correct < row.first_incorrect
+            or pd.isnull(row.first_incorrect),
+            axis=1,
+        )
+    except:
+        return {}
+
+    sun["multiple_tries"] = sun.apply(
+        lambda row: row.first_correct > row.first_incorrect, axis=1
+    )
+
+    sun["gave_up"] = sun.apply(lambda row: pd.isnull(row.first_correct), axis=1)
+
+    sung = sun.groupby("div_id").agg(
+        num_never=("gave_up", "sum"),
+        num_eventually=("multiple_tries", "sum"),
+        num_first=("right_first", "sum"),
+    )
+
+    sung["no_attempt"] = sung.apply(
+        lambda row: tot_students - (row.num_never + row.num_eventually + row.num_first),
+        axis=1,
+    )
+
+    sung = sung.reset_index()
+
+    sungm = sung.melt(id_vars=["div_id"])
+
+    cols = 2
+    num_rows = math.ceil(sungm.div_id.nunique())
+    fig = make_subplots(
+        rows=num_rows,
+        cols=cols,
+        specs=[[{"type": "domain"} for x in range(cols)] for y in range(num_rows)],
+    )
+
+    positions = row_col_gen(sungm.div_id.nunique())
+    for did in sungm.div_id.unique():
+        row, col = next(positions)
+        df = sungm[sungm.div_id == did]
+        values = df.value
+        names = df.variable
+        fig.add_pie(
+            values=values,
+            hole=0.4,
+            labels=names,
+            title={"text": did, "position": "top center"},
+            row=row,
+            col=col,
+        )
+
+    fig.update_layout(height=250 * num_rows, width=600)
+    # if there is a really large number of donuts maybe remove the text
+    # fig.update_traces(textinfo="none")
+    return fig
 
 
 # This layout describes the page.  There is no html and no template, just this.
