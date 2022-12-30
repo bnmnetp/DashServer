@@ -80,16 +80,31 @@ def do_callback(chap_label):
     return make_progress_graph(chap_label)
 
 
+def make_short_name(name):
+    if len(name) < 30:
+        return name
+    else:
+        return name[:15] + "..." + name[-12:]
+
+
 def make_progress_graph(chapter):
     eng = create_engine(DBURL)
 
     progress = pd.read_sql_query(
         f"""select sub_chapter_id, status, count(*)
-    from user_sub_chapter_progress where course_name = '{COURSE}' and chapter_id = '{chapter}'
+    from user_sub_chapter_progress
+    where course_name = '{COURSE}' and chapter_id = '{chapter}'
     group by sub_chapter_id, status
     order by sub_chapter_id""",
         eng,
     )
+    chap_subchap = pd.read_sql_query(
+        f"""select chapter_label, sub_chapter_label, sub_chapter_name, sub_chapter_num
+    from chapters join sub_chapters on chapters.id = sub_chapters.chapter_id
+    where course_id = '{BASE}'""",
+        eng,
+    )
+
     scdf = progress.groupby("sub_chapter_id").agg(total=("count", "sum"))
     pdf = progress.groupby(["sub_chapter_id", "status"]).agg(
         students=("count", "sum"), ccount=("count", "min")
@@ -100,12 +115,25 @@ def make_progress_graph(chapter):
     )
     smap = {-1: "Not Started", 0: "Started", 1: "Complete"}
     pdf["named_status"] = pdf.status.map(lambda x: smap[x])
+    pdf = pdf.merge(
+        chap_subchap[chap_subchap.chapter_label == chapter],
+        left_on="sub_chapter_id",
+        right_on="sub_chapter_label",
+    )
+    pdf = pdf[pdf.sub_chapter_num > 0].sort_values("sub_chapter_num", ascending=True)
+    pdf["short_name"] = pdf.sub_chapter_name.map(make_short_name)
 
     # assume you have a "long-form" data frame
     # see https://plotly.com/python/px-arguments/ for more options
 
     fig = px.bar(
-        pdf, x="pct", y="sub_chapter_id", color="named_status", width=700, height=1000
+        pdf,
+        x="pct",
+        y="short_name",
+        color="named_status",
+        width=700,
+        height=1000,
+        category_orders={"short_name": pdf.short_name.unique()},
     )
 
     fig.update_layout(
@@ -150,6 +178,7 @@ def make_student_activity_graph(chap):
         else 'Other'
       end as EType
     from useinfo where course_id = '{COURSE}' ) as T
+    where sid not in (select username from auth_user join course_instructor on auth_user.id = instructor )
     group by sid, EType
     order by sid
     """,
@@ -167,7 +196,7 @@ def make_student_activity_graph(chap):
 # Donut Charts by subchapter
 #
 @app.callback(Output("subchapter_list", "options"), Input("chapter_list", "value"))
-def set_cities_options(selected_chapter):
+def make_subchapter_options(selected_chapter):
     # select all subchapters for the given chapter in the BASECOURSE
     res = pd.read_sql_query(
         f"""
@@ -232,9 +261,7 @@ def make_the_donuts(chapter, subchapter):
 
     sun = sun.reset_index()
 
-    # pd.MultiIndex.from_tuples(sun.rename(columns={('min', 'T'): ('min', 'first_correct')}))
     sun.columns = sun.columns.map("_".join)
-
     sun = sun.rename(
         columns={
             "min_F": "first_incorrect",
@@ -263,19 +290,21 @@ def make_the_donuts(chapter, subchapter):
     sun["gave_up"] = sun.apply(lambda row: pd.isnull(row.first_correct), axis=1)
 
     sung = sun.groupby("div_id").agg(
-        num_never=("gave_up", "sum"),
-        num_eventually=("multiple_tries", "sum"),
-        num_first=("right_first", "sum"),
+        stopped=("gave_up", "sum"),
+        multiple_attempts=("multiple_tries", "sum"),
+        first_attempt=("right_first", "sum"),
     )
 
     sung["no_attempt"] = sung.apply(
-        lambda row: tot_students - (row.num_never + row.num_eventually + row.num_first),
+        lambda row: tot_students
+        - (row.stopped + row.multiple_attempts + row.first_attempt),
         axis=1,
     )
 
     sung = sung.reset_index()
 
     sungm = sung.melt(id_vars=["div_id"])
+    sungm = sungm.sort_values(["variable", "div_id"])
 
     cols = 2
     num_rows = math.ceil(sungm.div_id.nunique())
@@ -295,12 +324,18 @@ def make_the_donuts(chapter, subchapter):
             values=values,
             hole=0.4,
             labels=names,
-            title={"text": did, "position": "top center"},
+            sort=False,  # If True plotly re-sorts the categories larges to smallest
+            title={
+                "text": f"<a href='https://runestone.academy'>{did}</a>",
+                "position": "bottom center",
+            },
             row=row,
             col=col,
         )
 
     fig.update_layout(height=250 * num_rows, width=600)
+    fig.update_layout(colorway=["blue", "orange", "lightgray", "red"])
+
     # if there is a really large number of donuts maybe remove the text
     # fig.update_traces(textinfo="none")
     return fig
@@ -349,6 +384,7 @@ app.layout = html.Div(
                 # in previous outputs.  See `Dash App With Chained Callbacks <https://dash.plotly.com/basic-callbacks>`_ for a good example
                 dbc.Row(
                     [
+                        html.H1(children=["Checkpoint Question Analysis"]),
                         dcc.Dropdown(
                             id="subchapter_list",
                         ),
